@@ -2,7 +2,7 @@
 
 Catálogo pessoal de leituras — um app web progressivo para registrar, organizar e acompanhar livros lidos ao longo do tempo.
 
-**Acesse:** [awlcampos.github.io/fichas-literarias](https://awlcampos.github.io/fichas-literarias)
+**Acesse:** [[awlcampos.github.io/cardlit)](https://awlcampos.github.io/cardlit/)
 
 ---
 
