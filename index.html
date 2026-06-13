@@ -584,10 +584,6 @@ body{background:var(--bg);font-family:"Lato",sans-serif;color:var(--td);
         <div class="frow"><span class="flabel">Data de leitura:</span><textarea class="ata" id="f-dataleit" rows="1" oninput="ae(this);draft()"></textarea></div>
       </div>
       <div class="section">
-        <div class="sec-hdr">Resumo Objetivo</div>
-        <textarea class="bta" id="f-resumo" rows="4" placeholder="Resumo objetivo do livro..." oninput="ae(this);draft()"></textarea>
-      </div>
-      <div class="section">
         <div class="sec-hdr">Classificação</div>
         <div class="rlbl">Nota geral:</div>
         <div class="nota-row" id="nota-row"></div>
@@ -606,8 +602,10 @@ body{background:var(--bg);font-family:"Lato",sans-serif;color:var(--td);
         <div class="rlbl" style="margin-top:4px">Obs:</div>
         <textarea class="ata ata-shrink" id="f-obs" rows="1" placeholder="Observações..." oninput="shrinkObs(this);draft()"></textarea>
       </div>
-    </div>
-    <div class="right-col">
+      <div class="section">
+        <div class="sec-hdr">Resumo Objetivo</div>
+        <textarea class="bta" id="f-resumo" rows="4" placeholder="Resumo objetivo do livro..." oninput="ae(this);draft()"></textarea>
+      </div>
       <div class="section">
         <div class="sec-hdr">Elementos Chave</div>
         <ul class="key-list" id="key-list">
@@ -617,6 +615,8 @@ body{background:var(--bg);font-family:"Lato",sans-serif;color:var(--td);
         </ul>
         <button class="add-btn" onclick="addKey()">+ adicionar elemento</button>
       </div>
+    </div>
+    <div class="right-col">
       <div class="section">
         <div class="sec-hdr">Personagens</div>
         <div class="psub">Personagens Centrais:</div>
