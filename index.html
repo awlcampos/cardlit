@@ -86,6 +86,16 @@ body{background:var(--bg);font-family:"Lato",sans-serif;color:var(--td);
 .view{max-width:1020px;margin:0 auto;padding:14px 12px;display:none;}
 .view.active{display:block;}
 
+
+#auth-banner{position:fixed;top:calc(var(--nav-h) + var(--act-h));left:0;right:0;z-index:250;
+  background:#c0392b;color:#fff;padding:11px 16px;display:none;align-items:center;justify-content:center;
+  gap:12px;font-size:13px;font-weight:700;box-shadow:0 3px 12px rgba(0,0,0,.3);text-align:center;}
+#auth-banner.show{display:flex;}
+#auth-banner button{background:#fff;color:#c0392b;border:none;border-radius:7px;padding:5px 14px;
+  font-family:"Lato",sans-serif;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;}
+#auth-banner button:hover{background:#ffe0e0;}
+.pending-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#ffb300;margin-left:4px;}
+
 /* FAB */
 #fab-save{position:fixed;bottom:20px;right:20px;z-index:300;width:54px;height:54px;
   border-radius:50%;background:var(--pd);color:#fff;border:none;font-size:22px;
@@ -405,6 +415,12 @@ body{background:var(--bg);font-family:"Lato",sans-serif;color:var(--td);
   </div>
 </div>
 
+<!-- AUTH BANNER -->
+<div id="auth-banner">
+  <span id="auth-banner-msg">⚠️ Sua sessão do Google expirou. Suas fichas estão salvas no aparelho, mas precisam ser sincronizadas.</span>
+  <button onclick="reconnectAndSync()">🔄 Reconectar e sincronizar</button>
+</div>
+
 <!-- LIBRARY PANEL -->
 <div id="library-panel">
   <h3>📚 Fichas salvas</h3>
@@ -464,7 +480,6 @@ body{background:var(--bg);font-family:"Lato",sans-serif;color:var(--td);
     <button class="sort-btn" id="csort-title" onclick="setCatSort('title')">🔤 Título</button>
     <button class="sort-btn" id="csort-nota" onclick="setCatSort('nota')">⭐ Nota</button>
   </div>
-  <div class="sort-row" id="cat-sort-row"></div>
   <div class="cat-filters" id="cat-filters"></div>
   <div class="cat-empty" id="cat-empty" style="display:none">Nenhuma ficha ainda.<br><small>Clique em ➕ Nova ficha para começar.</small></div>
   <div class="book-grid" id="book-grid"></div>
@@ -502,7 +517,6 @@ body{background:var(--bg);font-family:"Lato",sans-serif;color:var(--td);
     <button class="sort-btn" id="esort-title" onclick="setEstSort('title')">🔤 Título</button>
     <button class="sort-btn" id="esort-lido" onclick="setEstSort('lido')">✓ Lido</button>
   </div>
-  <div class="sort-row" id="est-sort-row"></div>
   <div class="cat-empty" id="est-empty" style="display:none">Nenhum livro na estante ainda.<br><small>Clique em ➕ para adicionar.</small></div>
   <div class="book-grid" id="est-grid"></div>
 </div>
@@ -543,7 +557,6 @@ body{background:var(--bg);font-family:"Lato",sans-serif;color:var(--td);
     <button class="sort-btn" id="wsort-title" onclick="setWantSort('title')">🔤 Título</button>
     <button class="sort-btn" id="wsort-price" onclick="setWantSort('price')">💰 Valor</button>
   </div>
-  <div class="sort-row" id="want-sort-row"></div>
   <div class="want-empty" id="want-empty" style="display:none">Nenhum livro na wish list ainda.</div>
   <div class="want-grid" id="want-grid"></div>
 </div>
@@ -653,6 +666,21 @@ body{background:var(--bg);font-family:"Lato",sans-serif;color:var(--td);
 function ae(el){el.style.height='auto';el.style.height=el.scrollHeight+'px';}
 function aeAll(){document.querySelectorAll('textarea').forEach(ae);}
 function ssync(msg,cls){const el=document.getElementById('sync-status');if(el){el.textContent=msg;el.className='sync-status '+(cls||'');}}
+
+// Auto-save draft of the form being edited (debounced).
+// Protects against losing an in-progress ficha before it's saved.
+let _draftTimer=null;
+function draft(){
+  clearTimeout(_draftTimer);
+  _draftTimer=setTimeout(()=>{
+    try{
+      // only save draft when the form view is active (avoid clobbering during loads)
+      if(document.getElementById('view-form')?.classList.contains('active')){
+        localStorage.setItem('draft',JSON.stringify(collect()));
+      }
+    }catch(e){console.warn('draft save:',e);}
+  },500);
+}
 
 // ══ SHRINK ══
 function shrinkTitle(){
@@ -838,25 +866,46 @@ async function saveToLib(){
   }else{
     d._k=Date.now();d._s=new Date().toLocaleDateString('pt-BR');lib.push(d);_editingKey=d._k;
   }
-  // SAVE TO LOCALSTORAGE FIRST — always
+  // STEP 1: Always persist locally first (never lose data)
+  d._pendingSync=true; // assume pending until Sheets confirms
+  const li=lib.findIndex(x=>String(x._k)===String(d._k));
+  if(li>=0)lib[li]=d;
   setLib(lib);
   localStorage.removeItem('draft');
   renderLib();
-  ssync('💾 Salvo localmente','draft');
-  // Then sync to Google Sheets
-  if(typeof gConnected!=='undefined'&&gConnected){
-    ssync('⏳ Salvando no Google...','busy');
-    try{
-      await gSaveBook(d);
-      ssync('✓ Salvo no Google Sheets','ok');
-      setTimeout(()=>ssync('✓ Sincronizado','ok'),4000);
-    }catch(e){
-      console.error('Sheets save error:',e);
-      ssync('⚠️ Salvo local — Sheets offline','err');
+
+  // STEP 2: Sync to Sheets (if logged in)
+  let syncedOK=false;
+  if(typeof gConnected!=='undefined'&&gConnected&&gToken){
+    ssync('⏳ Salvando no Google Sheets...','busy');
+    const tokenOK=await gEnsureToken();
+    if(tokenOK){
+      try{
+        await gSaveBook(d);
+        clearPending(d._k);
+        syncedOK=true;
+        ssync('✓ Salvo no Google Sheets','ok');
+      }catch(e){
+        console.error('Sheets save error:',e);
+        // keep _pendingSync=true, book is safe locally
+        ssync('⚠️ Salvo no aparelho — falha no Sheets','err');
+        showAuthBanner('⚠️ A ficha foi salva no aparelho mas não chegou ao Google Sheets. Clique para reconectar e sincronizar.');
+      }
+    }else{
+      ssync('⚠️ Salvo no aparelho — sessão expirada','err');
+      // banner already shown by gEnsureToken
     }
+  }else{
+    // not connected — keep _pendingSync=true so it syncs on next login
+    ssync('💾 Salvo no aparelho (será sincronizado ao reconectar)','draft');
   }
-  // clear form and go back
-  setTimeout(()=>{_editingKey=null;clearForm();go(_prevView||'catalogo');},600);
+
+  // STEP 3: Only change screen AFTER sync attempt completes
+  _editingKey=null;
+  clearForm();
+  go(_prevView||'catalogo');
+  if(syncedOK)setTimeout(()=>ssync('✓ Sincronizado','ok'),3000);
+  updatePendingIndicator();
 }
 
 function clearForm(){
@@ -895,56 +944,7 @@ function closeForm(){
 }
 
 
-// ══ SORT ══
-const _sort={catalogo:'date-desc',estante:'date-desc',want:'title-asc'};
-
-function buildSortRow(containerId,view,opts){
-  const row=document.getElementById(containerId);if(!row)return;
-  row.innerHTML='<span style="color:rgba(255,255,255,.6);font-size:10px;margin-right:2px;">Ordenar:</span>';
-  opts.forEach(({key,label})=>{
-    const b=document.createElement('button');b.className='sort-btn'+(_sort[view]===key?' active':'');
-    b.textContent=label;
-    b.onclick=()=>{
-      if(_sort[view]===key){
-        // toggle asc/desc
-        _sort[view]=key.endsWith('-asc')?key.replace('-asc','-desc'):key.replace('-desc','-asc');
-      }else _sort[view]=key;
-      if(view==='catalogo')renderCatalogo();
-      else if(view==='estante')renderEstante();
-      else if(view==='want')renderWant();
-    };
-    row.appendChild(b);
-  });
-}
-
-function sortBooks(arr,view){
-  const s=_sort[view]||'date-desc';
-  return [...arr].sort((a,b)=>{
-    if(s==='date-desc'||s==='date-asc'){
-      const da=parseDate(a._s||''),db=parseDate(b._s||'');
-      return s==='date-desc'?db-da:da-db;
-    }
-    if(s==='title-asc'||s==='title-desc'){
-      const ta=(a.btitle||a.titulo||a._t||'').toLowerCase();
-      const tb=(b.btitle||b.titulo||b._t||'').toLowerCase();
-      return s==='title-asc'?ta.localeCompare(tb):tb.localeCompare(ta);
-    }
-    return 0;
-  });
-}
-
-function sortWish(arr){
-  const s=_sort['want'];
-  const priceOrder={'ate5':1,'5a10':2,'10a25':3,'25a40':4,'40a60':5,'60a80':6,'mais80':7,'':99};
-  return [...arr].sort((a,b)=>{
-    if(s==='title-asc')return(a.titulo||'').localeCompare(b.titulo||'');
-    if(s==='title-desc')return(b.titulo||'').localeCompare(a.titulo||'');
-    if(s==='price-asc')return(priceOrder[a.price||'']||99)-(priceOrder[b.price||'']||99);
-    if(s==='price-desc')return(priceOrder[b.price||'']||99)-(priceOrder[a.price||'']||99);
-    return 0;
-  });
-}
-
+// ══ SORT HELPERS ══
 function parseDate(s){
   const m=s.match(/(\d{1,2})\/(\d{4})/);if(m)return new Date(+m[2],+m[1]-1,1).getTime();
   return 0;
@@ -1292,22 +1292,22 @@ function sortLib(arr){
   return [...arr].sort((a,b)=>{
     if(catSort==='title')return(a.btitle||a._t||'').localeCompare(b.btitle||b._t||'','pt');
     if(catSort==='nota')return(b.nota||0)-(a.nota||0);
-    // date: newest first
-    const da=a._s||'',db=b._s||'';return db.localeCompare(da);
+    // date: newest first (parse DD/MM/YYYY properly)
+    return parseDate(b._s||'')-parseDate(a._s||'');
   });
 }
 function sortEst(arr){
   return [...arr].sort((a,b)=>{
     if(estSort==='title')return(a.titulo||'').localeCompare(b.titulo||'','pt');
     if(estSort==='lido')return(b.lido?1:0)-(a.lido?1:0);
-    return(b._s||'').localeCompare(a._s||'');
+    return parseDate(b._s||'')-parseDate(a._s||'');
   });
 }
 function sortWant(arr){
   return [...arr].sort((a,b)=>{
     if(wantSort==='title')return(a.titulo||'').localeCompare(b.titulo||'','pt');
     if(wantSort==='price')return(PRICE_ORDER[a.price]||99)-(PRICE_ORDER[b.price]||99);
-    return(b._added||'').localeCompare(a._added||'');
+    return parseDate(b._added||'')-parseDate(a._added||'');
   });
 }
 
@@ -1435,22 +1435,67 @@ const G_EST_H=['_key','Título','Autor','Ano','Gênero','Páginas','URL Capa','L
 
 let gTokenClient=null,gToken=null,gProfile=null,gSsId=localStorage.getItem('g_ssid')||null,gFolderId=localStorage.getItem('g_fid')||null,gConnected=false;
 function gH(){return{Authorization:'Bearer '+gToken,'Content-Type':'application/json'};}
+function gTokenExpired(){const exp=parseInt(localStorage.getItem('g_token_exp')||'0');return Date.now()>=exp;}
+function gTokenExpiringSoon(){const exp=parseInt(localStorage.getItem('g_token_exp')||'0');return Date.now()>=(exp-120000);} // 2min buffer
+// Ensure we have a valid token before a write. Returns true if usable.
+async function gEnsureToken(){
+  if(!gToken)return false;
+  if(gTokenExpiringSoon()){
+    const ok=await gRefreshToken();
+    if(!ok){showAuthBanner();return false;}
+  }
+  return true;
+}
 function ssyncG(msg,cls){ssync(msg,cls);}
 
-async function gApi(url,opts={}){
+async function gApi(url,opts={},_retry){
   const r=await fetch(url,{headers:gH(),...opts});
+  if(r.status===401&&!_retry){
+    // token expired mid-request — refresh once and retry
+    const ok=await gRefreshToken();
+    if(ok)return gApi(url,opts,true);
+    throw new Error('401: sessão expirada');
+  }
   if(!r.ok){const t=await r.text();throw new Error(r.status+': '+t.substring(0,120));}
   return r.json();
+}
+
+// Refresh token, returns Promise<bool>. Resolves false on failure/timeout.
+let _refreshing=null;
+let _refreshResolve=null;
+function gRefreshToken(){
+  if(_refreshing)return _refreshing;
+  _refreshing=new Promise((resolve)=>{
+    if(!gTokenClient){_refreshing=null;resolve(false);return;}
+    let settled=false;
+    const finish=(val)=>{
+      if(settled)return;settled=true;
+      _refreshResolve=null;      // unhook so stale callbacks don't fire
+      _refreshing=null;
+      resolve(val);
+    };
+    _refreshResolve=(success)=>finish(success);
+    // timeout guard: if Google never calls back (3rd-party cookie block)
+    setTimeout(()=>finish(false),6000);
+    try{gTokenClient.requestAccessToken({prompt:''});}
+    catch(e){finish(false);}
+  });
+  return _refreshing;
 }
 
 function gInitClient(){
   if(typeof google==='undefined'){setTimeout(gInitClient,500);return;}
   try{gTokenClient=google.accounts.oauth2.initTokenClient({client_id:G_CLIENT_ID,scope:G_SCOPES,
     callback:(resp)=>{
-      if(resp.error){ssync('','');gUpdateUI(false);return;}
+      if(resp.error){
+        if(_refreshResolve){_refreshResolve(false);_refreshResolve=null;}
+        ssync('⚠️ Sessão expirada — clique em Entrar','err');return;
+      }
       gToken=resp.access_token;
       const exp=Date.now()+((resp.expires_in||3600)-60)*1000;
       try{localStorage.setItem('g_token',gToken);localStorage.setItem('g_token_exp',String(exp));}catch(e){}
+      // if this was a silent refresh, resolve it and don't re-run full login
+      if(_refreshResolve){_refreshResolve(true);_refreshResolve=null;hideAuthBanner();return;}
       gAfterLogin();
     },
     error_callback:(err)=>{ssync('⚠️ Login cancelado','err');}
@@ -1467,11 +1512,13 @@ function gUpdateUI(on){
 }
 async function gAfterLogin(){
   ssync('⏳ Conectando...','busy');
+  hideAuthBanner();
   try{
     const cached=localStorage.getItem('g_profile');
     if(cached)try{gProfile=JSON.parse(cached);}catch(e){}
     if(!gProfile){const p=await fetch('https://www.googleapis.com/oauth2/v3/userinfo',{headers:{Authorization:'Bearer '+gToken}});gProfile=await p.json();try{localStorage.setItem('g_profile',JSON.stringify(gProfile));}catch(e){}}
-    gUpdateUI(true);await gSetupStorage();
+    gUpdateUI(true);
+    await gSetupStorage();
   }catch(e){console.error(e);ssync('⚠️ '+e.message,'err');}
 }
 async function gFindOrCreateFolder(name,pid){
@@ -1581,6 +1628,8 @@ async function gDeleteRow(sheetName,key){
 }
 async function gSaveBook(d){
   if(!gConnected||!gSsId)return;
+  // ensure token is valid before writing (gApi also auto-refreshes on 401)
+  if(gTokenExpiringSoon()){const ok=await gRefreshToken();if(!ok)throw new Error('Sessão expirada');}
   if(d.cover&&d.cover.startsWith('data:')&&!d.coverURL?.includes('drive.google')){
     try{const url=await gUploadCover(d.cover,d.btitle);if(url){d.coverURL=url;d.cover=null;const lib=getLib();const idx=lib.findIndex(x=>x._k===d._k);if(idx>=0){lib[idx].coverURL=url;lib[idx].cover=null;setLib(lib);}}}catch(e){console.warn('Cover upload:',e);}
   }
@@ -1627,10 +1676,22 @@ async function gUploadCover(base64,title){
 async function gLoadAll(){
   if(!gConnected||!gSsId)return;
   try{
-    // fichas
+    // STEP 1: flush any locally-pending books to Sheets FIRST,
+    // so the merge below sees them as remote and never drops them.
+    await flushPending();
+
+    // STEP 2: read remote fichas
     const r=await gApi('https://sheets.googleapis.com/v4/spreadsheets/'+gSsId+'/values/'+encodeURIComponent(G_SHEET_F+'!A:X'));
-    const lib=(r.values||[]).slice(1).filter(row=>row[0]&&row[0]!=='_key').map(gRowToBook);
-    setLib(lib);
+    const remote=(r.values||[]).slice(1).filter(row=>row[0]&&row[0]!=='_key').map(gRowToBook);
+
+    // STEP 3: MERGE — remote is source of truth, but keep any local
+    // book still flagged pending (flush may have partially failed).
+    const localLib=getLib();
+    const remoteKeys=new Set(remote.map(b=>String(b._k)));
+    const stillPending=localLib.filter(b=>b._pendingSync&&!remoteKeys.has(String(b._k)));
+    const merged=[...remote,...stillPending];
+    setLib(merged);
+
     // lixeira
     const rt=await gApi('https://sheets.googleapis.com/v4/spreadsheets/'+gSsId+'/values/'+encodeURIComponent(G_SHEET_T+'!A:X'));
     const trash=(rt.values||[]).slice(1).filter(row=>row[0]&&row[0]!=='_key').map(r=>{const b=gRowToBook(r);b._deletedAt=String(r[21]||'');return b;});
@@ -1643,37 +1704,120 @@ async function gLoadAll(){
     const re=await gApi('https://sheets.googleapis.com/v4/spreadsheets/'+gSsId+'/values/'+encodeURIComponent(G_SHEET_E+'!A:I'));
     const estante=(re.values||[]).slice(1).filter(row=>row[0]&&row[0]!=='_key').map(row=>({_k:parseInt(row[0])||Date.now(),titulo:String(row[1]||''),autor:String(row[2]||''),ano:String(row[3]||''),genero:String(row[4]||''),paginas:String(row[5]||''),coverURL:String(row[6]||''),lido:row[7]==='Sim',_s:String(row[8]||'')}));
     setEstante(estante);
+
     renderLib();updateTrashBadge();updateWishTrashBadge();updateEstTrashBadge();
     const v=document.querySelector('.view.active')?.id?.replace('view-','');
     if(v==='catalogo')renderCatalogo();else if(v==='dashboard')renderDashboard();
     else if(v==='estante')renderEstante();else if(v==='want')renderWant();
-  }catch(e){console.error('gLoadAll:',e);ssync('⚠️ Erro ao carregar: '+e.message,'err');}
+    updatePendingIndicator();
+    if(getPendingBooks().length===0)hideAuthBanner();
+  }catch(e){
+    console.error('gLoadAll:',e);
+    // CRITICAL: on load failure, do NOT touch localStorage — keep all local data
+    ssync('⚠️ Erro ao carregar: '+e.message,'err');
+  }
 }
-function gTryRestoreSession(){
-  const tok=localStorage.getItem('g_token');const exp=parseInt(localStorage.getItem('g_token_exp')||'0');
-  if(!tok)return;
+async function gTryRestoreSession(){
+  const tok=localStorage.getItem('g_token');
+  if(!tok){
+    if(getPendingBooks().length)updatePendingIndicator();
+    return;
+  }
   const cached=localStorage.getItem('g_profile');
   if(cached)try{gProfile=JSON.parse(cached);}catch(e){}
-  if(gProfile)gUpdateUI(true); // show UI immediately from cache
-  if(exp>Date.now()){
-    // token still valid
+  if(gProfile)gUpdateUI(true);
+
+  if(!gTokenExpired()){
     gToken=tok;ssync('⏳ Reconectando...','busy');
-    gSetupStorage().catch(e=>{
-      console.warn('Session restore failed:',e);
-      ssync('⚠️ Reconexão falhou — clique em Entrar','err');
-      // do NOT clear token — let user retry manually
-    });
+    try{await gSetupStorage();}
+    catch(e){
+      console.warn('Restore w/ valid token failed:',e);
+      const ok=await gRefreshToken();
+      if(ok){try{await gSetupStorage();}catch(e2){showAuthBanner();}}
+      else showAuthBanner();
+    }
   }else{
-    // token expired — try silent refresh
     ssync('⏳ Renovando sessão...','busy');
-    if(!gTokenClient){setTimeout(gTryRestoreSession,1000);return;}
-    try{
-      gTokenClient.requestAccessToken({prompt:''});
-      // callback handles success; on failure keep UI showing user info
-    }catch(e){
-      ssync('⚠️ Sessão expirada — clique em Entrar','err');
+    const ok=await gRefreshToken();
+    if(ok){
+      try{await gSetupStorage();}catch(e){showAuthBanner();}
+    }else{
+      ssync('⚠️ Sessão expirada','err');
+      if(getPendingBooks().length){
+        showAuthBanner('⚠️ '+getPendingBooks().length+' ficha(s) no aparelho aguardando sincronização. Clique para reconectar.');
+      }else{
+        showAuthBanner('Sua sessão do Google expirou. Clique para reconectar.');
+      }
     }
   }
+}
+
+
+
+// ══ PENDING SYNC QUEUE ══
+// Books that couldn't reach Sheets are flagged _pendingSync=true in lib.
+// They are NEVER deleted by gLoadAll and are retried on reconnect.
+function markPending(key){
+  const lib=getLib();const idx=lib.findIndex(x=>String(x._k)===String(key));
+  if(idx>=0){lib[idx]._pendingSync=true;setLib(lib);}
+  updatePendingIndicator();
+}
+function clearPending(key){
+  const lib=getLib();const idx=lib.findIndex(x=>String(x._k)===String(key));
+  if(idx>=0&&lib[idx]._pendingSync){delete lib[idx]._pendingSync;setLib(lib);}
+  updatePendingIndicator();
+}
+function getPendingBooks(){return getLib().filter(b=>b._pendingSync);}
+function updatePendingIndicator(){
+  const n=getPendingBooks().length;
+  const el=document.getElementById('sync-status');
+  if(n>0&&el&&!el.textContent.includes('Salvando')){
+    ssync('⚠️ '+n+' ficha(s) aguardando sincronização','err');
+    showAuthBanner('⚠️ '+n+' ficha(s) salva(s) no aparelho aguardando envio ao Google Sheets.');
+  }
+}
+// Push all pending books to Sheets. Returns count synced.
+async function flushPending(){
+  const pending=getPendingBooks();
+  if(!pending.length)return 0;
+  let synced=0;
+  for(const book of pending){
+    try{
+      await gSaveBook(book);
+      clearPending(book._k);
+      synced++;
+      ssync('⏳ Sincronizando '+synced+'/'+pending.length+'...','busy');
+    }catch(e){console.error('flushPending:',e);break;} // stop on first failure (token dead)
+  }
+  if(synced>0)ssync('✓ '+synced+' ficha(s) sincronizada(s)','ok');
+  return synced;
+}
+
+// ══ AUTH BANNER ══
+function showAuthBanner(msg){
+  const b=document.getElementById('auth-banner');if(!b)return;
+  if(msg)document.getElementById('auth-banner-msg').textContent=msg;
+  b.classList.add('show');
+}
+function hideAuthBanner(){const b=document.getElementById('auth-banner');if(b)b.classList.remove('show');}
+async function reconnectAndSync(){
+  ssync('⏳ Reconectando...','busy');
+  // interactive login — shows Google account picker, always works
+  const ok=await new Promise(resolve=>{
+    let settled=false;
+    const finish=(v)=>{if(settled)return;settled=true;_refreshResolve=null;resolve(v);};
+    _refreshResolve=(s)=>finish(s);
+    setTimeout(()=>finish(false),90000);
+    try{gTokenClient.requestAccessToken({prompt:'consent'});}catch(e){finish(false);}
+  });
+  if(!ok){ssync('⚠️ Não foi possível reconectar','err');return;}
+  hideAuthBanner();
+  gConnected=true;
+  try{
+    await flushPending();
+    await gLoadAll();
+    ssync('✓ Tudo sincronizado','ok');
+  }catch(e){console.error(e);ssync('⚠️ '+e.message,'err');}
 }
 
 // ══ INIT ══
@@ -1683,8 +1827,15 @@ window.addEventListener('load',()=>{
   try{const d=localStorage.getItem('draft');if(d)restore(JSON.parse(d));}catch(e){}
   setTimeout(aeAll,100);
   updateTrashBadge();updateWishTrashBadge();updateEstTrashBadge();
+  // surface any books left unsynced from a previous session
+  if(getPendingBooks().length)updatePendingIndicator();
   const tryInit=()=>{if(typeof google==='undefined'){setTimeout(tryInit,400);return;}gInitClient();setTimeout(gTryRestoreSession,300);};
   tryInit();
+  setInterval(()=>{
+    if(gToken&&gConnected&&gTokenExpiringSoon()){
+      gRefreshToken().then(ok=>{if(!ok&&getPendingBooks().length)showAuthBanner();});
+    }
+  },240000);
 });
 </script>
 </body>
