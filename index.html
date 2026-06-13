@@ -584,6 +584,10 @@ body{background:var(--bg);font-family:"Lato",sans-serif;color:var(--td);
         <div class="frow"><span class="flabel">Data de leitura:</span><textarea class="ata" id="f-dataleit" rows="1" oninput="ae(this);draft()"></textarea></div>
       </div>
       <div class="section">
+        <div class="sec-hdr">Resumo Objetivo</div>
+        <textarea class="bta" id="f-resumo" rows="4" placeholder="Resumo objetivo do livro..." oninput="ae(this);draft()"></textarea>
+      </div>
+      <div class="section">
         <div class="sec-hdr">Classificação</div>
         <div class="rlbl">Nota geral:</div>
         <div class="nota-row" id="nota-row"></div>
@@ -604,10 +608,6 @@ body{background:var(--bg);font-family:"Lato",sans-serif;color:var(--td);
       </div>
     </div>
     <div class="right-col">
-      <div class="section">
-        <div class="sec-hdr">Resumo Objetivo</div>
-        <textarea class="bta" id="f-resumo" rows="4" placeholder="Resumo objetivo do livro..." oninput="ae(this);draft()"></textarea>
-      </div>
       <div class="section">
         <div class="sec-hdr">Elementos Chave</div>
         <ul class="key-list" id="key-list">
@@ -1371,15 +1371,33 @@ function exportJSON(){const blob=new Blob([JSON.stringify(getLib(),null,2)],{typ
 function importJSON(e){
   const file=e.target.files[0];if(!file)return;
   const reader=new FileReader();
-  reader.onload=ev=>{
+  reader.onload=async ev=>{
     try{
       const data=JSON.parse(ev.target.result);const arr=Array.isArray(data)?data:[data];
-      const lib=getLib();const keys=new Set(lib.map(x=>(x.btitle||'').toLowerCase()+'|'+(x.fields?.['f-autor']||'').toLowerCase()));
-      let added=0;
-      arr.forEach(item=>{if(!item._k)item._k=Date.now()+Math.random();if(!item._t)item._t=item.btitle||'Importado';if(!item._s)item._s=new Date().toLocaleDateString('pt-BR');const k=(item.btitle||'').toLowerCase()+'|'+(item.fields?.['f-autor']||'').toLowerCase();if(!keys.has(k)){lib.push(item);keys.add(k);added++;}});
-      setLib(lib);renderLib();renderCatalogo();
-      ssync('✓ '+added+' ficha(s) importada(s)','ok');
-    }catch{alert('Arquivo inválido.');}
+      const lib=getLib();
+      const keys=new Set(lib.map(x=>(x.btitle||'').toLowerCase()+'|'+(x.fields?.['f-autor']||'').toLowerCase()));
+      const newBooks=[];
+      arr.forEach(item=>{
+        if(!item._k)item._k=Date.now()+Math.random();
+        if(!item._t)item._t=item.btitle||'Importado';
+        if(!item._s)item._s=new Date().toLocaleDateString('pt-BR');
+        const k=(item.btitle||'').toLowerCase()+'|'+(item.fields?.['f-autor']||'').toLowerCase();
+        if(!keys.has(k)){lib.push(item);keys.add(k);newBooks.push(item);}
+      });
+      setLib(lib);renderLib();renderCatalogo();renderDashboard();
+      ssync('✓ '+newBooks.length+' ficha(s) importada(s)','ok');
+      // sync to Sheets if connected
+      if(newBooks.length&&typeof gConnected!=='undefined'&&gConnected&&gSsId){
+        ssync('⏳ Sincronizando '+newBooks.length+' fichas com Sheets...','busy');
+        let synced=0;
+        for(const book of newBooks){
+          try{await gSaveBook(book);synced++;}catch(err){console.error('sync err:',err);}
+          if(synced%5===0)ssync('⏳ '+synced+'/'+newBooks.length+' sincronizadas...','busy');
+        }
+        ssync('✓ '+synced+' fichas no Sheets','ok');
+        setTimeout(()=>ssync('✓ Sincronizado','ok'),4000);
+      }
+    }catch(err){alert('Arquivo inválido: '+err.message);}
   };reader.readAsText(file);e.target.value='';
 }
 
@@ -1408,7 +1426,7 @@ function printA4(){
 // ══ GOOGLE SHEETS INTEGRATION ══
 const G_CLIENT_ID='613733320980-vir40mr0l0pbuakoabb23j3p9a9jhlph.apps.googleusercontent.com';
 const G_SCOPES='https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile';
-const G_SS_NAME='fichas-literarias';
+const G_SS_NAME='cardlit.bd';
 const G_SHEET_F='Fichas';const G_SHEET_T='Lixeira';const G_SHEET_W='WishList';const G_SHEET_E='Estante';
 const G_FOLDER=['Projetos','Fichas Literárias'];
 const G_HEADERS=['_key','Título','Autor','Ano Orig','Ano Lida','Gênero','Páginas','Formato','Data Leitura','Nota','Linguagem','Densidade','Obs','Elementos Chave','Pers.Centrais','Pers.Sec','Outros Pers.','Resumo','Registro','URL Capa','Capa B64','Mês/Ano','_savedAt','_title'];
